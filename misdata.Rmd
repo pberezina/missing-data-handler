@@ -1,0 +1,263 @@
+---
+title: "Analysis with missing data of a weight loss intervention study"
+author: "Polina Berezina"
+date: "12/10/2021"
+output:
+  pdf_document: default
+  df_print: paged
+
+geometry: top=1in, bottom=1in, left=1in, right=1in
+fontsize: 11
+urlcolor: blue
+papersize: letter
+---
+
+```{r setup, include=FALSE, warning=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning=FALSE, dpi=300,  fig.align='center', fig.dim = c(4,3))
+knitr::knit_hooks$set(crop = knitr::hook_pdfcrop)
+library(VIM)
+library(ggplot2)
+library(mitools) 
+library(tidyr)
+library(rjags)
+library(purrr)
+library(mice)
+library(dplyr)
+library(knitr)
+# install.packages(c("reshape2", "zoo"))
+library(reshape2)
+library(zoo)
+setwd('/Users/polina/OneDrive - The Ohio State University/Projects/stats-coursework/missing-data/missing-project/')
+load('wldatasub.Rdata')
+```
+
+## Part 1
+
+Goal: explore relationship between BMI and parameters of lipid profile among weight loss study participants at the start of a study by [Przulj et al. (2021)](https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0246186).
+
+#### Exploratory data analysis.
+
+There is no obvious strong linear relationship between BMI variable and four lipid profile variables at the start of the study (baseline, or BL), as seen on Fig. 1. Interestingly, there is a clear positive correlation between total cholesterol, `BL_CHO` and low density lipoprotein, `BL_LDL`, as well as a potential non-linear negative relationship between triglycerides, `BL_TRI`, and high density lipoprotein, `BL_HDL`. Aggregations plot for missing values in each variable shows that there are no missing values in the response variable of interest, 10% of `BL_LDL` values missing, and 4% of values for other lipid-related variables. Missining pattern is monotone. Finally, the parallel boxplots show slightly higher median values of BMI for missing lipid variables, indicating potential deviation from missing completely at random mechanism. Data missing mechanism is assumed to be ignorable for imputation purposes.
+
+```{r, fig.dim=c(5.5,3), fig.cap='Relationships between variables at baseline'}
+wldatasub <- wldatasub %>% 
+  mutate_each_(funs(factor(.)), c("GENDER", "ETH", "EDU", "EMPLOY")) %>% 
+  mutate(FEMALE = recode(GENDER, Female = 1, Male = 0))
+
+subbase <- select(wldatasub, "BL_BMI", "BL_TRI", "BL_CHO", "BL_HDL", "BL_LDL")
+pairs(subbase)
+```
+
+
+```{r, fig.show = "hold", out.width = "50%", fig.align = "default", fig.cap="Missing values patterns and boxplots for baseline data"}
+knitr::include_graphics(c("fig2.png",'fig3.png'))
+#aggr(subbase, cex.lab=0.8, cex.axis=0.7,xaxs="i", yaxs="i", cex.numbers=0.8, numbers=TRUE)
+#pbox(subbase, cex.lab=0.8, cex.axis=0.7, interactive = FALSE,)
+```
+
+
+
+#### Methods.
+
+The goal is to determine whether lipid profile variables are associated with BMI, so the analysis model is: 
+
+$$BL.BMI_i = \beta_0 +\beta_1 BL.TRI_i + \beta_2 BL.CHO_i + \beta_3 BL.HDL_i + \beta_4 BL.LDI_i + \epsilon_i$$
+
+where $\epsilon_i \stackrel{i.i.d}{\sim}N(0,\sigma^2)$, $i=1,...50$, and $\beta$ regression coefficients are parameters of interest. MICE model is used to impute the missing values of four lipid variables for the analysis model above, with a Predictive Mean Matching (PMM) distance instead of the default Normal links model. This choice is motivated by inspection of histograms that show no variables being normally distributed, so it might be prudent to avoid specifying a parametric model to define distribution of missing data. MICE-PMM approach, however, creates a linear regression model to get the donors. Parameter for donors was set to 3, and multiple imputations was set to 30. Finally, a simulated study to generate imputation and model fitting 100 times is conducted to assess uncertainty of parameter estimates and quality of the proposed imputation procedure.
+
+#### Results.
+
+Sampling distributions of estimates and their corresponding p-values and 95% confidence intervals (CI) obtained are described in the table below. Overall, sampling distribution of coefficient estimates approximates normal and thus indicates stable imputation procedure. The results also show that no lipid profile variables are not significant (p-value < 0.05), and their 95% confidence intervals contain 0. Therefore, we can conclude lipid profile variables are not statistically significantly associated with BMI.
+
+
+```{r}
+B <- 100 
+lmest.boot <- data.frame(coefficient = rep(c("b0", "b1", "b2", "b3", "b4"), times = B), estimate = rep(NA, B), p.value = rep(NA, B), CI2.5 = rep(NA, B),  CI97.5 = rep(NA, B))
+
+for(b in seq(1, B*5, by=5)){
+  imp <- mice(subbase, method="pmm", m=30, maxit=10, donors=3, print=FALSE)
+  #plot(imp)
+  #library(lattice)
+  #stripplot(imp)
+  lmfit <- with(imp, lm(BL_BMI ~ BL_TRI+BL_CHO+BL_HDL+BL_LDL))
+  lmest <- summary(pool(lmfit), conf.int = TRUE,conf.level = 0.95)
+  lmest.boot[b:(b+4), 2] <- lmest$estimate
+  lmest.boot[b:(b+4), 3] <- lmest$p.value
+  lmest.boot[b:(b+4), 4] <- lmest$`2.5 %`
+  lmest.boot[b:(b+4), 5] <- lmest$`97.5 %`
+}
+bl.completed <- complete(imp)
+```
+
+
+```{r, fig.dim=c(4,2.5), fig.cap="Spread of p-values for regression coefficients"}
+ggplot(lmest.boot, aes(x=coefficient, y = p.value)) +
+  geom_boxplot(fill = "grey", colour = "black") + 
+  theme(axis.text=element_text(size=12)) + 
+  theme_bw() 
+```
+
+
+
+```{r}
+lmest.boot %>% 
+  group_by(coefficient) %>% 
+  summarize(Mean = mean(estimate), '2.5% CI' = mean(CI2.5), '97.5%' = mean(CI97.5)) %>% 
+  kable(caption = "Means of coefficient estimates and their 95% CI from MICE-PMM bootsrap", digits = 3)
+```
+
+
+
+## Part 2 
+
+Goal: explore approaches to handling missing data in longitudinal studies to estimate the change in BMI from baseline to week 12.
+
+For this part of the project, use BOCF and LOCF to estimate the average change in BMI from baseline to week 12. Then, each group member should use concepts discussed in class this semester to choose a different method of addressing the missing data that they believe will address the missing data in a manner that is more statistically sound than BOCF or LOCF. 
+Write a report summarizing your analyses for this part, and estimating the average change in BMI.
+
+#### Exploratory data analysis.
+
+At week 12 the missing pattern is general, with 38% of study participants missing lipid profile values and 24% missing weight measures. What is interesting is that some participants had their weight recorded, but not their lipid profiles and vice versa. 20% of study participants are missing all lipid profile and weight records for week 12. We can conclude that the missing data process is general. The boxplots show somewhat higher weight values for people with missing lipid profiles, potentially indicating deviation from the missing completely at random missing data mechanism. Again, for imputation the data missing mechanism is assumed to be ignorable.
+
+
+```{r, fig.show = "hold", out.width = "50%", fig.align = "default", fig.cap="Missing values patterns and boxplots for week 12 data"}
+wk12 <- select(wldatasub, starts_with("WK12"), -WK12_DAYS_COM)
+#pairs(wk12)
+#pbox(wk12, cex.lab=0.8, cex.axis=0.8, interactive = FALSE,)
+#marginplot(data.frame(Weight=wk12$WK12_WGHT, Cholesterol=wk12$WK12_CHO))
+#aggr(wk12, numbers = TRUE, cex.axis=0.7, cex.lab=0.8, cex.numbers=0.7,xaxs="i", yaxs="i" )
+knitr::include_graphics(c("fig4.png",'fig5.png'))
+```
+
+
+
+
+#### Methods.
+
+Comparing 4 missing value imputation approaches:
+
+**BOCF: Baseline Observation Carried Forward**. Previously imputed baseline values are used to fill in for all missing measurements at week 12 for the same variable on the same participant. 
+
+**LOCF: Last Observation Carried Forward**. In addition to the previously imputed baseline values, week 6 weight records are also used to determine the most recently observed value to fill in for week 12 for the same variable on the same participant. 
+
+We previously determined that there is no statistically significant relationship between BMI and lipid profile at baseline. A similar plot has confirmed that such a relationship is not apparent either in week 12 data, so imputation approaches based on modeling weight through lipid profiles might not be effective. Other two approached are employed:
+
+**Single  imputation with a stochastic mean**: impute weight values with their observed mean, plus the noise term.
+
+**MICE with Normal links model**. Model selection showed that week 12 weight is statistically significantly associated with gender and participant's height. Since none of the independent variables have missing values, we can proceed with imputing missing weight values through an improper multiple imputation model. Coefficients $\beta$ are estimated through a linear regression model from the observed weight data, and variability in estimating parameters is accounted through approximating a posterior distribution for parameters in the imputation model. Number of imputations is set to 1000: $d=1,...1000$.
+
+$$\theta_{IM}^{(d)}=[\beta_{0,IM},..\sigma_{IM}]^{(d)} \sim N_{\theta, IM}(\hat{\theta}_{IM} (WK12.WGHT_0), \hat{Var}_{WK12.WGHT_0}(\hat{\theta}_{IM} (WK12.WGHT_0)))$$
+
+$$WK12.WGHT_i^{(d)} \sim N(\beta_{0,IM}^{(d)} +\beta_{1,IM}^{(d)} BL.HGT_i + \beta_{2,IM}^{(d)} BL.GENDER_i, \sigma_{i,IM}^{(d)})$$
+
+
+```{r locf}
+#LOCF, BOCF imputation
+wght3 <-  select(wldatasub, ends_with("WGHT"))      #3 cols. all baseline weights were obsereved, no need to use imputed     
+wght2 <-  data.frame(BL_WGHT = wldatasub$BL_WGHT, WK12_WGHT = wldatasub$WK12_WGHT) #2 cols
+
+fun_obs_imp <- function(dat){
+  n <- nrow(dat)
+  m <- ncol(dat)
+  for (i in 1:n){
+    cz <- zoo(as.numeric(dat[i,]))
+    for (j in 1:m){
+      imp.vals <- na.locf(cz)
+      dat[i,j] <- imp.vals[[j]]
+  }}
+  dat
+}
+
+imp.locf <- fun_obs_imp(wght3)
+imp.bocf <- fun_obs_imp(wght2)
+
+# add BMI variable
+imp.locf <- mutate(imp.locf, WK12_BMI = WK12_WGHT / (wldatasub$BL_HGT)^2 *10000)
+imp.bocf <- mutate(imp.bocf, WK12_BMI = WK12_WGHT / (wldatasub$BL_HGT)^2*10000 )
+```
+
+
+
+```{r}
+# single imputation 
+imp_mean <- mice(wk12, method="norm.nob", m=1, maxit=1, print=FALSE)
+imp.single <- complete(imp_mean)
+# add BMI
+imp.single <- mutate(imp.single, WK12_BMI = WK12_WGHT / (wldatasub$BL_HGT)^2 *10000 )
+
+# naive, or complete cas imputation
+imp.naive <- mutate(wldatasub, WK12_BMI_test = WK12_WGHT/(BL_HGT)^2 * 10000)
+```
+
+
+```{r}
+#fitfull <- summary(lm(WK12_WGHT ~ GENDER + ETH + AGE + EDU	+EMPLOY+ BL_HGT, wldatasub))
+#fit0 <- lm(WK12_WGHT ~ 1, wldatasub)
+#leaps::step(fit0, scope = list(upper=fitfull), data=wldatasub, direction="both", k = log(nrow(wldatasub)), na.action=na.omit)
+# WK12_WGHT ~ BL_HGT + GENDER has smallest AIC!
+lm1 <- lm(WK12_WGHT ~ BL_HGT + FEMALE, wldatasub)
+beta.hat <- lm1$coeff
+names(beta.hat) <- c("beta0.hat", "beta1.hat", "beta2.hat")
+sigma.hat <- sigma(lm1)^2
+theta.hat <- c(beta.hat, sigma.hat=sigma.hat)
+var.beta.hat <- vcov(lm1)
+var.sigma.hat <- 2*sigma.hat^2/(lm1$df.residual) 
+
+D <- 1000
+n <- nrow(wldatasub)
+wk12.improperMI <- matrix(wldatasub$WK12_WGHT, nrow=D, ncol=n, byrow=TRUE) 
+for(i in 1:n){ 
+  if (is.na(wldatasub$WK12_WGHT[i])){ 
+    beta.hat.d <- MASS::mvrnorm(D, beta.hat, var.beta.hat)
+    mean.i <- beta.hat.d[,1] + beta.hat.d[,2]*wldatasub$BL_HGT[i] +beta.hat.d[,3]*wldatasub$FEMALE[i]
+    sd.i <- sqrt(pmax(rnorm(D, sigma.hat, sd=sqrt(var.sigma.hat)), 0.1^2))  #a minimum of 0.1
+    wk12.improperMI[,i] <- rnorm(D, mean=mean.i, sd=sd.i)
+} } 
+```
+
+
+```{r, include=FALSE}
+# analysis for MI imputation completed data
+means.mi <- rep(NA,D) 
+vars.mi <- rep(NA,D)
+
+for(d in 1:D){
+  wk12.BMI <-  wk12.improperMI[d,]/ (wldatasub$BL_HGT)^2 *10000 #convert weight imputed to BMI
+  t.mi <- t.test(wldatasub$BL_BMI, wk12.BMI, paired=TRUE)
+  means.mi[d] <- t.mi$estimate[[1]]
+  vars.mi[d] <- t.mi$stderr ^ 2
+}
+
+# 4. Estimate the mean of the posterior distribution of mu0-mu1 using Rubin’s rules. 
+ML.postest <- MIcombine(results=as.list(means.mi),
+                            variances=as.list(vars.mi))
+res.MI <- summary(ML.postest, confint=TRUE)
+```
+
+
+
+#### Results and discussion.
+
+
+To compare BMI measures at baseline vs. week 12, a paired t-test is conducted at 95% confidence using completed datasets.
+BMI for week 12 was missing from the dataset, so it was reconstructed for inference by using the formula $BMI_{WK12} = \frac{Weight_{WK12}}{Height_{BL}^2}*10000$. 
+
+Results for average change estimate are the lowest (~0.22-0.31 decrease in BMI after 12 weeks) using LOCF, BOCF, and single mean imputation approaches. Naive, or complete-case-based analysis and improper imputations resulted in significantly higher change estimates (~1.1-1.2 decrease). Uncertainty of estimates is significantly underestimated in the naive-case analysis, so employing any type of imputation has approximately equally helped to improve it. Finally, the CI for the naive-case analysis indicate that under repeated sampling, we expect 95% of the true average change in BMI will be within ~0.8-1.4 interval range, which is quite large. Both LOCF, BOCF and single mean imputation-based analysis CI are centered around 0 average change, and improper imputation procedure lead to the ~(-0.1,2.5) interval range. This indicates that without employing imputation, researchers might erroneously conclude statistically significant change in BMI after 12 weeks of the study at  5% significance level. Employing BOCF, LOCF, and single stochastic mean imputations might not be the most reliable for inference and would result in a failure to reject the hypothesis of no change in BMI. Interestingly, the improper imputation has showed that there is change in BMI at 10% significance level, but not 5%. This indicates utilizing height and gender helped to model missingness in the data.
+
+In conclusion, our results agree with the findings in the original paper that there is no clear relationship between lipid profiles and b) provide further insights on the choice of imputation procedure and its implications on the certainty in average change BMI estimates.
+
+```{r}
+t1 <- t.test(wldatasub$BL_BMI, imp.naive$WK12_BMI_test,paired=TRUE)
+t2 <- t.test(wldatasub$BL_BMI, imp.locf$WK12_BMI,paired=TRUE)
+t3 <- t.test(wldatasub$BL_BMI, imp.bocf$WK12_BMI,paired=TRUE)
+t4 <- t.test(wldatasub$BL_BMI, imp.single$WK12_BMI,paired=TRUE)
+
+data.frame('Avg.change' = c(t1$estimate[[1]], t2$estimate[[1]],t3$estimate[[1]], t4$estimate[[1]], res.MI$results),
+                    'CI2.5' = c(t1$conf.int[1], t2$conf.int[1],t3$conf.int[1],t4$conf.int[1], res.MI$`(lower`),
+                    'CI97.5' = c(t1$conf.int[2],t2$conf.int[2],t3$conf.int[2],t4$conf.int[2], res.MI$`upper)`), 
+           'Std.error'=c(t1$stderr,t2$stderr,t3$stderr,t4$stderr, res.MI$se),
+           'pvalue' = c(t1$p.value,t2$p.value,t3$p.value,t4$p.value, 2*pt(q=res.MI$results/res.MI$se, df=49, lower.tail=FALSE)),
+           row.names= c('Naive', 'LOCF', 'BOCF', 'Single', 'Improper imp.')) %>% 
+  kable(caption = "Means of coefficient estimates and their 95% CI", digits = 3)
+```
+
